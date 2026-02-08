@@ -12,13 +12,12 @@
 <body class="bg-slate-50 font-sans">
     <div id="root"></div>
 
-    <script type="text/babel">
+    <script type="text/babel" data-type="module">
         const { useState, useEffect } = React;
 
-        // Firebase SDK Imports
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
-        import { getFirestore, collection, addDoc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+        import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { getFirestore, collection, setDoc, doc, onSnapshot, query, where, getDoc } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
         const firebaseConfig = {
             apiKey: "AIzaSyDcwNuAm5EP9aKks3O3mW7ENxK9RB1cgV0",
@@ -94,23 +93,55 @@
                         <div className="flex items-center gap-2 font-black text-xl text-slate-800">
                             <div className="bg-blue-600 p-1.5 rounded-lg text-white">ES</div> Estudio Spanish
                         </div>
-                        {user && <button onClick={handleLogout} className="text-slate-400 hover:text-red-500 font-bold">Logout</button>}
+                        {user && (
+                            <div className="flex items-center gap-4">
+                                <span className="text-sm font-bold text-slate-500">{user.displayName || user.email}</span>
+                                <button onClick={handleLogout} className="text-slate-400 hover:text-red-500 font-bold">Logout</button>
+                            </div>
+                        )}
                     </nav>
 
                     <div className="max-w-4xl mx-auto p-6">
                         {view === 'landing' && <Landing setView={setView} setRole={setRole} setClassCode={setClassCode} setError={setError} />}
                         {view === 'teacher_lobby' && <TeacherLobby myClasses={myClasses} onSelect={(c) => { setActiveClass(c); setClassCode(c.code); setView('teacher_class'); }} onCreate={async (n) => {
                             const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-                            await addDoc(collection(db, 'classes'), { name: n, code, teacherId: user.uid, createdAt: new Date() });
+                            // Named doc: Use the class code as the ID
+                            await setDoc(doc(db, 'classes', code), { name: n, code, teacherId: user.uid, createdAt: new Date() });
                         }} />}
-                        {view === 'teacher_class' && <TeacherDashboard assignments={assignments} submissions={submissions} activeClass={activeClass} onBack={() => { setView('teacher_lobby'); setClassCode(""); }} onAddTask={async (d) => await addDoc(collection(db, 'assignments'), { ...d, classCode, createdAt: new Date() })} />}
-                        {view === 'student' && <StudentDashboard assignments={assignments} onStart={(a) => { setActiveAssignment(a); setView('game'); }} />}
-                        {view === 'game' && <FlashcardGame assignment={activeAssignment} onFinish={async (s, t) => {
-                            await addDoc(collection(db, 'submissions'), { studentId: user.uid, classCode, assignmentTitle: activeAssignment.title, score: s, total: t, timestamp: new Date() });
+                        {view === 'teacher_class' && <TeacherDashboard assignments={assignments} submissions={submissions} activeClass={activeClass} onBack={() => { setView('teacher_lobby'); setClassCode(""); }} onAddTask={async (d) => {
+                            const cleanTitle = d.title.replace(/[^a-z0-9]/gi, '_');
+                            const docId = `${classCode}_${cleanTitle}`;
+                            // Named doc: Use classCode_Title as the ID
+                            await setDoc(doc(db, 'assignments', docId), { ...d, classCode, createdAt: new Date() });
+                        }} />}
+                        {view === 'student' && <StudentDashboard assignments={assignments} submissions={submissions} onStart={(a) => { setActiveAssignment(a); setView('game'); }} />}
+                        {view === 'game' && <FlashcardGame assignment={activeAssignment} onFinish={async (s, t, wrongOnes) => {
+                            const isLate = activeAssignment.deadline && new Date() > new Date(activeAssignment.deadline);
+                            const now = Date.now();
+                            const cleanName = (user.displayName || user.email).replace(/[^a-z0-9]/gi, '_');
+                            const cleanTitle = activeAssignment.title.replace(/[^a-z0-9]/gi, '_');
+                            const docId = `${cleanName}_${cleanTitle}_${now}`;
+                            
+                            // Named doc: Use StudentName_Title_Timestamp as the ID
+                            await setDoc(doc(db, 'submissions', docId), { 
+                                studentId: user.uid, 
+                                studentName: user.displayName || user.email,
+                                classCode, 
+                                assignmentId: activeAssignment.id,
+                                assignmentTitle: activeAssignment.title, 
+                                score: s, 
+                                total: t, 
+                                wrongWords: wrongOnes,
+                                isLate: isLate,
+                                timestamp: new Date() 
+                            });
                             setView('student');
                         }} onQuit={() => setView('student')} />}
                     </div>
-                    {error && <div className="fixed bottom-4 right-4 bg-red-600 text-white p-4 rounded-2xl shadow-xl">{error}</div>}
+                    {error && <div className="fixed bottom-4 right-4 bg-red-600 text-white p-4 rounded-2xl shadow-xl flex items-center gap-4">
+                        <span>{error}</span>
+                        <button onClick={() => setError("")} className="font-bold underline">Dismiss</button>
+                    </div>}
                 </div>
             );
         }
@@ -118,46 +149,59 @@
         function Landing({ setView, setRole, setClassCode, setError }) {
             const [email, setEmail] = useState("");
             const [pass, setPass] = useState("");
+            const [name, setName] = useState("");
             const [code, setCode] = useState("");
-            const [isTeacher, setIsTeacher] = useState(false);
+            const [mode, setMode] = useState('student_login');
 
-            const handleAuth = async (signup) => {
+            const handleAuth = async (isSignup, userRole) => {
+                setError("");
                 try {
-                    if (signup) await createUserWithEmailAndPassword(auth, email, pass);
-                    else await signInWithEmailAndPassword(auth, email, pass);
-                    setRole('teacher');
-                    localStorage.setItem('userRole', 'teacher');
+                    let userCredential;
+                    if (isSignup) {
+                        userCredential = await createUserWithEmailAndPassword(auth, email, pass);
+                        if (name) await updateProfile(userCredential.user, { displayName: name });
+                    } else {
+                        userCredential = await signInWithEmailAndPassword(auth, email, pass);
+                    }
+                    
+                    if (userRole === 'student' && code) {
+                        setClassCode(code.toUpperCase());
+                        localStorage.setItem('classCode', code.toUpperCase());
+                    } else if (userRole === 'student' && !code && !localStorage.getItem('classCode')) {
+                        throw new Error("Please enter your class code to login.");
+                    }
+
+                    setRole(userRole);
+                    localStorage.setItem('userRole', userRole);
                 } catch (e) { setError(e.message); }
             };
 
-            const handleStudent = async () => {
-                if (!code) return setError("Please enter a class code");
-                try {
-                    await signInAnonymously(auth);
-                    setRole('student');
-                    setClassCode(code.toUpperCase());
-                    localStorage.setItem('userRole', 'student');
-                    localStorage.setItem('classCode', code.toUpperCase());
-                } catch (e) { setError(e.message); }
-            };
+            const renderForm = (title, userRole, isSignup) => (
+                <div className="bg-white p-10 rounded-[2.5rem] border shadow-2xl space-y-4">
+                    <h2 className="text-2xl font-black text-center mb-4">{title}</h2>
+                    {userRole === 'student' && (
+                        <input placeholder="CLASS CODE" className="w-full p-4 border-2 border-blue-100 rounded-xl text-center text-xl font-black uppercase mb-2" value={code} onChange={e => setCode(e.target.value)} />
+                    )}
+                    {isSignup && (
+                        <input placeholder="Full Name" className="w-full p-4 bg-slate-50 rounded-xl" value={name} onChange={e => setName(e.target.value)} />
+                    )}
+                    <input placeholder="Email" className="w-full p-4 bg-slate-50 rounded-xl" value={email} onChange={e => setEmail(e.target.value)} />
+                    <input type="password" placeholder="Password" className="w-full p-4 bg-slate-50 rounded-xl" value={pass} onChange={e => setPass(e.target.value)} />
+                    <button onClick={() => handleAuth(isSignup, userRole)} className={`w-full py-4 rounded-xl font-black text-white ${userRole === 'teacher' ? 'bg-slate-900' : 'bg-blue-600'}`}>{isSignup ? 'Create Account' : 'Login'}</button>
+                    <div className="flex justify-between text-xs font-bold pt-4">
+                        <button onClick={() => setMode(isSignup ? (userRole === 'student' ? 'student_login' : 'teacher_login') : (userRole === 'student' ? 'student_signup' : 'teacher_signup'))} className="text-blue-600">{isSignup ? 'Already have an account? Login' : "Don't have an account? Sign Up"}</button>
+                        <button onClick={() => setMode(userRole === 'student' ? 'teacher_login' : 'student_login')} className="text-slate-400">{userRole === 'student' ? 'Teacher Access' : 'Student Access'}</button>
+                    </div>
+                </div>
+            );
 
             return (
                 <div className="max-w-md mx-auto py-12">
                     <h1 className="text-5xl font-black text-center mb-10 tracking-tight">¡Hola! 👋</h1>
-                    {!isTeacher ? (
-                        <div className="bg-white p-10 rounded-[2.5rem] border shadow-2xl text-center">
-                            <input placeholder="ENTER CODE" className="w-full p-5 border-2 border-slate-100 rounded-2xl text-center text-3xl font-black mb-6 uppercase" value={code} onChange={e => setCode(e.target.value)} />
-                            <button onClick={handleStudent} className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-xl shadow-xl">Enter Class</button>
-                            <button onClick={() => setIsTeacher(true)} className="mt-8 text-blue-600 font-bold text-sm">Teacher Login</button>
-                        </div>
-                    ) : (
-                        <div className="bg-white p-10 rounded-[2.5rem] border shadow-2xl space-y-4">
-                            <input placeholder="Email" className="w-full p-4 bg-slate-50 rounded-xl" value={email} onChange={e => setEmail(e.target.value)} />
-                            <input type="password" placeholder="Password" className="w-full p-4 bg-slate-50 rounded-xl" value={pass} onChange={e => setPass(e.target.value)} />
-                            <button onClick={() => handleAuth(false)} className="w-full bg-slate-900 text-white py-4 rounded-xl font-black">Login</button>
-                            <button onClick={() => setIsTeacher(false)} className="w-full mt-4 text-xs font-black text-slate-300 uppercase">Student Access</button>
-                        </div>
-                    )}
+                    {mode === 'student_login' && renderForm('Student Login', 'student', false)}
+                    {mode === 'student_signup' && renderForm('Student Signup', 'student', true)}
+                    {mode === 'teacher_login' && renderForm('Teacher Login', 'teacher', false)}
+                    {mode === 'teacher_signup' && renderForm('Teacher Signup', 'teacher', true)}
                 </div>
             );
         }
@@ -188,11 +232,16 @@
         function TeacherDashboard({ assignments, submissions, activeClass, onBack, onAddTask }) {
             const [open, setOpen] = useState(false);
             const [title, setTitle] = useState("");
+            const [deadline, setDeadline] = useState("");
             const [words, setWords] = useState([{ es: "", en: "" }]);
+            const [selectedReport, setSelectedReport] = useState(null);
+            const [selectedSet, setSelectedSet] = useState(null);
 
             const submit = () => {
-                onAddTask({ title, words });
+                onAddTask({ title, words, deadline });
                 setOpen(false);
+                setTitle("");
+                setWords([{es: "", en: ""}]);
             };
 
             return (
@@ -200,11 +249,18 @@
                     <button onClick={onBack} className="text-slate-400 font-black mb-4">← Back</button>
                     <div className="bg-white p-8 rounded-[2rem] border flex justify-between items-center shadow-sm">
                         <h2 className="text-3xl font-black">{activeClass.name} ({activeClass.code})</h2>
-                        <button onClick={() => setOpen(!open)} className="bg-slate-900 text-white px-8 py-3 rounded-2xl font-black">New List</button>
+                        <button onClick={() => setOpen(!open)} className="bg-slate-900 text-white px-8 py-3 rounded-2xl font-black">{open ? 'Cancel' : 'New List'}</button>
                     </div>
+
                     {open && (
                         <div className="bg-white p-8 rounded-[2rem] border-4 border-blue-100 shadow-2xl space-y-4">
-                            <input placeholder="List Title" className="w-full p-4 bg-slate-50 rounded-xl font-black" value={title} onChange={e => setTitle(e.target.value)} />
+                            <div className="grid grid-cols-2 gap-4">
+                                <input placeholder="List Title" className="p-4 bg-slate-50 rounded-xl font-black" value={title} onChange={e => setTitle(e.target.value)} />
+                                <div className="flex flex-col">
+                                    <label className="text-[10px] font-black uppercase text-slate-400 ml-2">Deadline</label>
+                                    <input type="date" className="p-4 bg-slate-50 rounded-xl font-bold" value={deadline} onChange={e => setDeadline(e.target.value)} />
+                                </div>
+                            </div>
                             {words.map((w, i) => (
                                 <div key={i} className="flex gap-2">
                                     <input placeholder="Spanish" className="flex-1 p-3 border rounded-xl" value={w.es} onChange={e => { const n = [...words]; n[i].es = e.target.value; setWords(n); }} />
@@ -215,33 +271,120 @@
                             <button onClick={submit} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black">Publish</button>
                         </div>
                     )}
+
                     <div className="grid lg:grid-cols-2 gap-8">
                         <div className="bg-white p-8 rounded-[2rem] border shadow-sm">
-                            <h3 className="text-xl font-black mb-4">Student Scores</h3>
-                            {submissions.map(s => <div key={s.id} className="py-2 border-b flex justify-between text-sm"><span>{s.studentId.slice(0, 5)}</span> <b>{s.score}/{s.total}</b></div>)}
+                            <h3 className="text-xl font-black mb-4">Student Activity</h3>
+                            <div className="space-y-2">
+                                {submissions.length === 0 ? <p className="text-slate-400 text-sm">No submissions yet.</p> : (
+                                    submissions.map(s => (
+                                        <div key={s.id} onClick={() => setSelectedReport(s)} className="p-4 border rounded-2xl flex justify-between items-center cursor-pointer hover:bg-slate-50 transition-colors">
+                                            <div>
+                                                <p className="font-bold">{s.studentName} {s.isLate && <span className="text-[10px] bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full ml-1">LATE</span>}</p>
+                                                <p className="text-xs text-slate-400">{s.assignmentTitle}</p>
+                                            </div>
+                                            <div className="text-right">
+                                                <b className="text-blue-600">{s.score}/{s.total}</b>
+                                                <p className="text-[10px] text-slate-300">View Report</p>
+                                            </div>
+                                        </div>
+                                    ))
+                                )}
+                            </div>
                         </div>
+
                         <div className="bg-white p-8 rounded-[2rem] border shadow-sm">
-                            <h3 className="text-xl font-black mb-4">Sets</h3>
-                            {assignments.map(a => <div key={a.id} className="p-3 bg-slate-50 rounded-xl mb-2 font-bold">{a.title}</div>)}
+                            <h3 className="text-xl font-black mb-4">Study Sets</h3>
+                            {assignments.map(a => (
+                                <div key={a.id} onClick={() => setSelectedSet(a)} className="p-4 bg-slate-50 rounded-2xl mb-2 cursor-pointer hover:bg-slate-100 transition-colors">
+                                    <div className="font-black">{a.title}</div>
+                                    <div className="flex justify-between items-center">
+                                        <span className="text-[10px] font-bold text-slate-400 uppercase">{a.deadline ? `Due: ${a.deadline}` : 'No deadline'}</span>
+                                        <span className="text-[10px] font-black text-blue-600 uppercase">View Words</span>
+                                    </div>
+                                </div>
+                            ))}
                         </div>
                     </div>
+
+                    {/* Report Modal */}
+                    {selectedReport && (
+                        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+                            <div className="bg-white w-full max-w-lg rounded-[2.5rem] p-10 relative shadow-2xl">
+                                <button onClick={() => setSelectedReport(null)} className="absolute top-6 right-6 text-slate-400 font-black">Close</button>
+                                <h2 className="text-3xl font-black mb-2">{selectedReport.studentName}</h2>
+                                <p className="text-slate-500 font-bold mb-6">Report for: {selectedReport.assignmentTitle}</p>
+                                <div className="space-y-4">
+                                    <h4 className="font-black text-sm uppercase text-slate-400 tracking-wider">Words to Review:</h4>
+                                    <div className="max-h-60 overflow-y-auto space-y-2">
+                                        {selectedReport.wrongWords?.length > 0 ? (
+                                            selectedReport.wrongWords.map((w, i) => (
+                                                <div key={i} className="flex justify-between p-3 bg-red-50 rounded-xl border border-red-100">
+                                                    <span className="font-bold text-red-700">{w.es}</span>
+                                                    <span className="text-red-400">{w.en}</span>
+                                                </div>
+                                            ))
+                                        ) : <p className="text-green-600 font-bold">Perfect score! No words missed.</p>}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* View Set Modal */}
+                    {selectedSet && (
+                        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+                            <div className="bg-white w-full max-w-lg rounded-[2.5rem] p-10 relative shadow-2xl">
+                                <button onClick={() => setSelectedSet(null)} className="absolute top-6 right-6 text-slate-400 font-black">Close</button>
+                                <h2 className="text-3xl font-black mb-2">{selectedSet.title}</h2>
+                                <p className="text-slate-500 font-bold mb-6">Study Set Preview</p>
+                                <div className="max-h-80 overflow-y-auto space-y-2">
+                                    {selectedSet.words.map((w, i) => (
+                                        <div key={i} className="flex justify-between p-3 bg-slate-50 rounded-xl border">
+                                            <span className="font-bold text-slate-700">{w.es}</span>
+                                            <span className="text-slate-400 italic">{w.en}</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        </div>
+                    )}
                 </div>
             );
         }
 
-        function StudentDashboard({ assignments, onStart }) {
+        function StudentDashboard({ assignments, submissions, onStart }) {
+            const getStatus = (assignmentId, deadline) => {
+                const sub = submissions.find(s => s.assignmentId === assignmentId);
+                if (sub) return { label: 'Completed', color: 'bg-green-100 text-green-700' };
+                if (deadline && new Date() > new Date(deadline)) return { label: 'Late', color: 'bg-red-100 text-red-700' };
+                return { label: 'Incomplete', color: 'bg-slate-100 text-slate-500' };
+            };
+
             return (
                 <div className="space-y-8">
                     <div className="bg-blue-600 p-10 rounded-[2.5rem] text-white shadow-xl">
                         <h2 className="text-4xl font-black tracking-tight">Mi Escritorio</h2>
+                        <p className="font-bold opacity-80 mt-2">Ready to master some Spanish?</p>
                     </div>
                     <div className="grid sm:grid-cols-2 gap-6">
-                        {assignments.map(a => (
-                            <div key={a.id} className="bg-white p-8 rounded-[2.5rem] border shadow-lg">
-                                <h4 className="text-2xl font-black mb-6">{a.title}</h4>
-                                <button onClick={() => onStart(a)} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black shadow-lg">Study Now</button>
-                            </div>
-                        ))}
+                        {assignments.map(a => {
+                            const status = getStatus(a.id, a.deadline);
+                            return (
+                                <div key={a.id} className="bg-white p-8 rounded-[2.5rem] border shadow-lg flex flex-col justify-between">
+                                    <div>
+                                        <div className="flex justify-between items-start mb-4">
+                                            <h4 className="text-2xl font-black leading-tight">{a.title}</h4>
+                                            <span className={`text-[10px] font-black uppercase px-3 py-1 rounded-full ${status.color}`}>{status.label}</span>
+                                        </div>
+                                        {a.deadline && <p className="text-xs font-bold text-slate-400 mb-6 uppercase tracking-wider">Due: {a.deadline}</p>}
+                                    </div>
+                                    <button onClick={() => onStart(a)} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black shadow-lg hover:bg-blue-700 transition-colors">
+                                        {status.label === 'Completed' ? 'Practice Again' : 'Start Task'}
+                                    </button>
+                                </div>
+                            );
+                        })}
                     </div>
                 </div>
             );
@@ -251,32 +394,36 @@
             const [idx, setIdx] = useState(0);
             const [flip, setFlip] = useState(false);
             const [res, setRes] = useState([]);
+            const [wrongOnes, setWrongOnes] = useState([]);
             const word = assignment.words[idx];
 
             const handleNext = (val) => {
                 const nextResults = [...res, val];
                 setRes(nextResults);
+                if (!val) setWrongOnes([...wrongOnes, word]);
+
                 if (idx < assignment.words.length - 1) {
                     setIdx(idx + 1);
                     setFlip(false);
                 } else {
-                    onFinish(nextResults.filter(r => r).length, assignment.words.length);
+                    onFinish(nextResults.filter(r => r).length, assignment.words.length, !val ? [...wrongOnes, word] : wrongOnes);
                 }
             };
 
             return (
                 <div className="max-w-xl mx-auto space-y-8">
                     <div className="flex justify-between font-black text-slate-400 uppercase text-xs">
-                        <button onClick={onQuit}>Exit</button>
+                        <button onClick={onQuit} className="hover:text-red-500">Exit</button>
                         <span>{idx + 1} / {assignment.words.length}</span>
                     </div>
-                    <div className="h-80 bg-white rounded-[3rem] shadow-2xl flex items-center justify-center p-8 text-center cursor-pointer text-4xl font-black" onClick={() => setFlip(!flip)}>
+                    <div className="h-80 bg-white rounded-[3rem] shadow-2xl flex items-center justify-center p-8 text-center cursor-pointer text-4xl font-black transition-transform duration-300 transform active:scale-95 border-2 border-transparent hover:border-blue-100" onClick={() => setFlip(!flip)}>
                         {flip ? word.en : word.es}
                     </div>
                     <div className="flex gap-4">
-                        <button onClick={() => handleNext(false)} className="flex-1 bg-white border-4 p-6 rounded-3xl font-black text-slate-400">Need Review</button>
-                        <button onClick={() => handleNext(true)} className="flex-1 bg-blue-600 p-6 rounded-3xl font-black text-white shadow-xl">Mastered!</button>
+                        <button onClick={() => handleNext(false)} className="flex-1 bg-white border-4 p-6 rounded-3xl font-black text-slate-400 hover:bg-red-50 hover:text-red-400 hover:border-red-100 transition-all">Need Review</button>
+                        <button onClick={() => handleNext(true)} className="flex-1 bg-blue-600 p-6 rounded-3xl font-black text-white shadow-xl hover:bg-blue-700 transition-all">Mastered!</button>
                     </div>
+                    <p className="text-center text-slate-300 text-[10px] font-bold uppercase tracking-widest">Tap card to flip</p>
                 </div>
             );
         }
