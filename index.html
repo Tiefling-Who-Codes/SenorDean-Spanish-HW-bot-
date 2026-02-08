@@ -13,7 +13,7 @@
     <div id="root"></div>
 
     <script type="text/babel" data-type="module">
-        const { useState, useEffect } = React;
+        const { useState, useEffect, useMemo } = React;
 
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
         import { getAuth, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, updateProfile } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
@@ -105,13 +105,11 @@
                         {view === 'landing' && <Landing setView={setView} setRole={setRole} setClassCode={setClassCode} setError={setError} />}
                         {view === 'teacher_lobby' && <TeacherLobby myClasses={myClasses} onSelect={(c) => { setActiveClass(c); setClassCode(c.code); setView('teacher_class'); }} onCreate={async (n) => {
                             const code = Math.random().toString(36).substring(2, 8).toUpperCase();
-                            // Named doc: Use the class code as the ID
                             await setDoc(doc(db, 'classes', code), { name: n, code, teacherId: user.uid, createdAt: new Date() });
                         }} />}
                         {view === 'teacher_class' && <TeacherDashboard assignments={assignments} submissions={submissions} activeClass={activeClass} onBack={() => { setView('teacher_lobby'); setClassCode(""); }} onAddTask={async (d) => {
                             const cleanTitle = d.title.replace(/[^a-z0-9]/gi, '_');
                             const docId = `${classCode}_${cleanTitle}`;
-                            // Named doc: Use classCode_Title as the ID
                             await setDoc(doc(db, 'assignments', docId), { ...d, classCode, createdAt: new Date() });
                         }} />}
                         {view === 'student' && <StudentDashboard assignments={assignments} submissions={submissions} onStart={(a) => { setActiveAssignment(a); setView('game'); }} />}
@@ -122,7 +120,6 @@
                             const cleanTitle = activeAssignment.title.replace(/[^a-z0-9]/gi, '_');
                             const docId = `${cleanName}_${cleanTitle}_${now}`;
                             
-                            // Named doc: Use StudentName_Title_Timestamp as the ID
                             await setDoc(doc(db, 'submissions', docId), { 
                                 studentId: user.uid, 
                                 studentName: user.displayName || user.email,
@@ -233,15 +230,22 @@
             const [open, setOpen] = useState(false);
             const [title, setTitle] = useState("");
             const [deadline, setDeadline] = useState("");
+            const [type, setType] = useState("flashcard");
             const [words, setWords] = useState([{ es: "", en: "" }]);
             const [selectedReport, setSelectedReport] = useState(null);
             const [selectedSet, setSelectedSet] = useState(null);
 
             const submit = () => {
-                onAddTask({ title, words, deadline });
+                if (words.length < 4 && type === 'quiz') {
+                    // Logic: Multiple choice needs at least 4 words to generate random options
+                    alert("Quiz mode requires at least 4 word pairs.");
+                    return;
+                }
+                onAddTask({ title, words, deadline, type });
                 setOpen(false);
                 setTitle("");
                 setWords([{es: "", en: ""}]);
+                setType("flashcard");
             };
 
             return (
@@ -254,21 +258,29 @@
 
                     {open && (
                         <div className="bg-white p-8 rounded-[2rem] border-4 border-blue-100 shadow-2xl space-y-4">
-                            <div className="grid grid-cols-2 gap-4">
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                 <input placeholder="List Title" className="p-4 bg-slate-50 rounded-xl font-black" value={title} onChange={e => setTitle(e.target.value)} />
                                 <div className="flex flex-col">
                                     <label className="text-[10px] font-black uppercase text-slate-400 ml-2">Deadline</label>
                                     <input type="date" className="p-4 bg-slate-50 rounded-xl font-bold" value={deadline} onChange={e => setDeadline(e.target.value)} />
+                                </div>
+                                <div className="flex flex-col">
+                                    <label className="text-[10px] font-black uppercase text-slate-400 ml-2">Task Type</label>
+                                    <div className="bg-slate-50 rounded-xl p-1 flex gap-1 h-full">
+                                        <button onClick={() => setType('flashcard')} className={`flex-1 rounded-lg text-xs font-black transition-all ${type === 'flashcard' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-400'}`}>Flashcards</button>
+                                        <button onClick={() => setType('quiz')} className={`flex-1 rounded-lg text-xs font-black transition-all ${type === 'quiz' ? 'bg-white shadow-sm text-blue-600' : 'text-slate-400'}`}>Quiz</button>
+                                    </div>
                                 </div>
                             </div>
                             {words.map((w, i) => (
                                 <div key={i} className="flex gap-2">
                                     <input placeholder="Spanish" className="flex-1 p-3 border rounded-xl" value={w.es} onChange={e => { const n = [...words]; n[i].es = e.target.value; setWords(n); }} />
                                     <input placeholder="English" className="flex-1 p-3 border rounded-xl" value={w.en} onChange={e => { const n = [...words]; n[i].en = e.target.value; setWords(n); }} />
+                                    {words.length > 1 && <button onClick={() => setWords(words.filter((_, idx) => idx !== i))} className="text-red-300 hover:text-red-500 font-bold px-2">×</button>}
                                 </div>
                             ))}
                             <button onClick={() => setWords([...words, {es: "", en: ""}])} className="text-blue-600 font-bold">+ Add Word</button>
-                            <button onClick={submit} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black">Publish</button>
+                            <button onClick={submit} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black">Publish {type === 'quiz' ? 'Quiz' : 'Flashcards'}</button>
                         </div>
                     )}
 
@@ -297,8 +309,11 @@
                             <h3 className="text-xl font-black mb-4">Study Sets</h3>
                             {assignments.map(a => (
                                 <div key={a.id} onClick={() => setSelectedSet(a)} className="p-4 bg-slate-50 rounded-2xl mb-2 cursor-pointer hover:bg-slate-100 transition-colors">
-                                    <div className="font-black">{a.title}</div>
-                                    <div className="flex justify-between items-center">
+                                    <div className="flex justify-between items-start">
+                                        <div className="font-black">{a.title}</div>
+                                        <span className="text-[8px] bg-blue-100 text-blue-600 px-2 py-1 rounded-md font-black uppercase">{a.type || 'flashcard'}</span>
+                                    </div>
+                                    <div className="flex justify-between items-center mt-1">
                                         <span className="text-[10px] font-bold text-slate-400 uppercase">{a.deadline ? `Due: ${a.deadline}` : 'No deadline'}</span>
                                         <span className="text-[10px] font-black text-blue-600 uppercase">View Words</span>
                                     </div>
@@ -307,7 +322,6 @@
                         </div>
                     </div>
 
-                    {/* Report Modal */}
                     {selectedReport && (
                         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
                             <div className="bg-white w-full max-w-lg rounded-[2.5rem] p-10 relative shadow-2xl">
@@ -331,13 +345,12 @@
                         </div>
                     )}
 
-                    {/* View Set Modal */}
                     {selectedSet && (
                         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
                             <div className="bg-white w-full max-w-lg rounded-[2.5rem] p-10 relative shadow-2xl">
                                 <button onClick={() => setSelectedSet(null)} className="absolute top-6 right-6 text-slate-400 font-black">Close</button>
                                 <h2 className="text-3xl font-black mb-2">{selectedSet.title}</h2>
-                                <p className="text-slate-500 font-bold mb-6">Study Set Preview</p>
+                                <p className="text-slate-500 font-bold mb-6">Study Set Preview ({selectedSet.type || 'flashcard'})</p>
                                 <div className="max-h-80 overflow-y-auto space-y-2">
                                     {selectedSet.words.map((w, i) => (
                                         <div key={i} className="flex justify-between p-3 bg-slate-50 rounded-xl border">
@@ -375,12 +388,15 @@
                                     <div>
                                         <div className="flex justify-between items-start mb-4">
                                             <h4 className="text-2xl font-black leading-tight">{a.title}</h4>
-                                            <span className={`text-[10px] font-black uppercase px-3 py-1 rounded-full ${status.color}`}>{status.label}</span>
+                                            <div className="flex flex-col items-end gap-1">
+                                                <span className={`text-[10px] font-black uppercase px-3 py-1 rounded-full ${status.color}`}>{status.label}</span>
+                                                <span className="text-[8px] font-black text-slate-300 uppercase">{a.type || 'flashcard'}</span>
+                                            </div>
                                         </div>
                                         {a.deadline && <p className="text-xs font-bold text-slate-400 mb-6 uppercase tracking-wider">Due: {a.deadline}</p>}
                                     </div>
                                     <button onClick={() => onStart(a)} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black shadow-lg hover:bg-blue-700 transition-colors">
-                                        {status.label === 'Completed' ? 'Practice Again' : 'Start Task'}
+                                        {status.label === 'Completed' ? 'Practice Again' : `Start ${a.type === 'quiz' ? 'Quiz' : 'Task'}`}
                                     </button>
                                 </div>
                             );
@@ -395,7 +411,22 @@
             const [flip, setFlip] = useState(false);
             const [res, setRes] = useState([]);
             const [wrongOnes, setWrongOnes] = useState([]);
+            const [selectedOption, setSelectedOption] = useState(null);
+            const [isCorrect, setIsCorrect] = useState(null);
+            
             const word = assignment.words[idx];
+            const isQuiz = assignment.type === 'quiz';
+
+            // Generate quiz options
+            const options = useMemo(() => {
+                if (!isQuiz) return [];
+                const others = assignment.words
+                    .filter(w => w.en !== word.en)
+                    .map(w => w.en);
+                const shuffled = [...others].sort(() => 0.5 - Math.random());
+                const picks = shuffled.slice(0, 3);
+                return [...picks, word.en].sort(() => 0.5 - Math.random());
+            }, [idx, isQuiz, assignment.words]);
 
             const handleNext = (val) => {
                 const nextResults = [...res, val];
@@ -405,9 +436,19 @@
                 if (idx < assignment.words.length - 1) {
                     setIdx(idx + 1);
                     setFlip(false);
+                    setSelectedOption(null);
+                    setIsCorrect(null);
                 } else {
                     onFinish(nextResults.filter(r => r).length, assignment.words.length, !val ? [...wrongOnes, word] : wrongOnes);
                 }
+            };
+
+            const handleOptionSelect = (opt) => {
+                if (selectedOption !== null) return;
+                const correct = opt === word.en;
+                setSelectedOption(opt);
+                setIsCorrect(correct);
+                setTimeout(() => handleNext(correct), 1000);
             };
 
             return (
@@ -416,14 +457,45 @@
                         <button onClick={onQuit} className="hover:text-red-500">Exit</button>
                         <span>{idx + 1} / {assignment.words.length}</span>
                     </div>
-                    <div className="h-80 bg-white rounded-[3rem] shadow-2xl flex items-center justify-center p-8 text-center cursor-pointer text-4xl font-black transition-transform duration-300 transform active:scale-95 border-2 border-transparent hover:border-blue-100" onClick={() => setFlip(!flip)}>
-                        {flip ? word.en : word.es}
+
+                    <div className="h-48 bg-white rounded-[3rem] shadow-xl flex items-center justify-center p-8 text-center text-5xl font-black border-2 border-transparent">
+                        {word.es}
                     </div>
-                    <div className="flex gap-4">
-                        <button onClick={() => handleNext(false)} className="flex-1 bg-white border-4 p-6 rounded-3xl font-black text-slate-400 hover:bg-red-50 hover:text-red-400 hover:border-red-100 transition-all">Need Review</button>
-                        <button onClick={() => handleNext(true)} className="flex-1 bg-blue-600 p-6 rounded-3xl font-black text-white shadow-xl hover:bg-blue-700 transition-all">Mastered!</button>
-                    </div>
-                    <p className="text-center text-slate-300 text-[10px] font-bold uppercase tracking-widest">Tap card to flip</p>
+
+                    {isQuiz ? (
+                        <div className="grid grid-cols-1 gap-3">
+                            {options.map((opt, i) => {
+                                let theme = "bg-white border-2 border-slate-100 text-slate-700";
+                                if (selectedOption === opt) {
+                                    theme = isCorrect ? "bg-green-500 border-green-500 text-white" : "bg-red-500 border-red-500 text-white";
+                                } else if (selectedOption !== null && opt === word.en) {
+                                    theme = "bg-green-500 border-green-500 text-white";
+                                }
+
+                                return (
+                                    <button 
+                                        key={i} 
+                                        onClick={() => handleOptionSelect(opt)}
+                                        className={`p-5 rounded-2xl font-bold text-lg transition-all transform active:scale-95 ${theme}`}
+                                    >
+                                        {opt}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    ) : (
+                        <>
+                            <div className="h-48 bg-white rounded-[3rem] shadow-2xl flex items-center justify-center p-8 text-center cursor-pointer text-4xl font-black transition-transform duration-300 transform active:scale-95 border-2 border-blue-50 hover:border-blue-200" onClick={() => setFlip(!flip)}>
+                                {flip ? word.en : <span className="text-slate-200 text-lg uppercase tracking-widest">Tap to reveal</span>}
+                            </div>
+                            <div className="flex gap-4">
+                                <button onClick={() => handleNext(false)} className="flex-1 bg-white border-4 p-6 rounded-3xl font-black text-slate-400 hover:bg-red-50 hover:text-red-400 hover:border-red-100 transition-all">Need Review</button>
+                                <button onClick={() => handleNext(true)} className="flex-1 bg-blue-600 p-6 rounded-3xl font-black text-white shadow-xl hover:bg-blue-700 transition-all">Mastered!</button>
+                            </div>
+                        </>
+                    )}
+                    
+                    {!isQuiz && <p className="text-center text-slate-300 text-[10px] font-bold uppercase tracking-widest">Flip and evaluate your knowledge</p>}
                 </div>
             );
         }
