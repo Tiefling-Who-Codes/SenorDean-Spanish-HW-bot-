@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Estudio Spanish</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body class="bg-slate-50 font-sans">
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        // Firebase SDK Imports
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { getFirestore, collection, addDoc, onSnapshot, query, where } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyDcwNuAm5EP9aKks3O3mW7ENxK9RB1cgV0",
+            authDomain: "estudio-spanish.firebaseapp.com",
+            projectId: "estudio-spanish",
+            storageBucket: "estudio-spanish.firebasestorage.app",
+            messagingSenderId: "225209939669",
+            appId: "1:225209939669:web:06f84526f3716018c8545c",
+            measurementId: "G-NQW2KCXJ49"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [role, setRole] = useState(localStorage.getItem('userRole') || null);
+            const [view, setView] = useState('landing');
+            const [classCode, setClassCode] = useState(localStorage.getItem('classCode') || '');
+            const [myClasses, setMyClasses] = useState([]);
+            const [assignments, setAssignments] = useState([]);
+            const [submissions, setSubmissions] = useState([]);
+            const [activeAssignment, setActiveAssignment] = useState(null);
+            const [activeClass, setActiveClass] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState("");
+
+            useEffect(() => {
+                const unsubscribe = onAuthStateChanged(auth, (u) => {
+                    setUser(u);
+                    setLoading(false);
+                    if (u) {
+                        if (role === 'teacher') setView('teacher_lobby');
+                        else if (role === 'student') setView('student');
+                    } else {
+                        setView('landing');
+                    }
+                });
+                return () => unsubscribe();
+            }, [role]);
+
+            useEffect(() => {
+                if (!user || role !== 'teacher') return;
+                const q = query(collection(db, 'classes'), where('teacherId', '==', user.uid));
+                return onSnapshot(q, (s) => {
+                    setMyClasses(s.docs.map(d => ({ id: d.id, ...d.data() })));
+                });
+            }, [user, role]);
+
+            useEffect(() => {
+                if (!classCode) return;
+                const qA = query(collection(db, 'assignments'), where('classCode', '==', classCode));
+                const unsubA = onSnapshot(qA, (s) => setAssignments(s.docs.map(d => ({ id: d.id, ...d.data() }))));
+                const qS = query(collection(db, 'submissions'), where('classCode', '==', classCode));
+                const unsubS = onSnapshot(qS, (s) => setSubmissions(s.docs.map(d => ({ id: d.id, ...d.data() }))));
+                return () => { unsubA(); unsubS(); };
+            }, [classCode]);
+
+            const handleLogout = async () => {
+                await signOut(auth);
+                localStorage.clear();
+                setRole(null);
+                setClassCode("");
+                setView('landing');
+            };
+
+            if (loading) return <div className="h-screen flex items-center justify-center font-bold text-blue-600">Cargando...</div>;
+
+            return (
+                <div className="min-h-screen">
+                    <nav className="bg-white border-b px-6 py-4 flex justify-between items-center sticky top-0 z-50">
+                        <div className="flex items-center gap-2 font-black text-xl text-slate-800">
+                            <div className="bg-blue-600 p-1.5 rounded-lg text-white">ES</div> Estudio Spanish
+                        </div>
+                        {user && <button onClick={handleLogout} className="text-slate-400 hover:text-red-500 font-bold">Logout</button>}
+                    </nav>
+
+                    <div className="max-w-4xl mx-auto p-6">
+                        {view === 'landing' && <Landing setView={setView} setRole={setRole} setClassCode={setClassCode} setError={setError} />}
+                        {view === 'teacher_lobby' && <TeacherLobby myClasses={myClasses} onSelect={(c) => { setActiveClass(c); setClassCode(c.code); setView('teacher_class'); }} onCreate={async (n) => {
+                            const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+                            await addDoc(collection(db, 'classes'), { name: n, code, teacherId: user.uid, createdAt: new Date() });
+                        }} />}
+                        {view === 'teacher_class' && <TeacherDashboard assignments={assignments} submissions={submissions} activeClass={activeClass} onBack={() => { setView('teacher_lobby'); setClassCode(""); }} onAddTask={async (d) => await addDoc(collection(db, 'assignments'), { ...d, classCode, createdAt: new Date() })} />}
+                        {view === 'student' && <StudentDashboard assignments={assignments} onStart={(a) => { setActiveAssignment(a); setView('game'); }} />}
+                        {view === 'game' && <FlashcardGame assignment={activeAssignment} onFinish={async (s, t) => {
+                            await addDoc(collection(db, 'submissions'), { studentId: user.uid, classCode, assignmentTitle: activeAssignment.title, score: s, total: t, timestamp: new Date() });
+                            setView('student');
+                        }} onQuit={() => setView('student')} />}
+                    </div>
+                    {error && <div className="fixed bottom-4 right-4 bg-red-600 text-white p-4 rounded-2xl shadow-xl">{error}</div>}
+                </div>
+            );
+        }
+
+        function Landing({ setView, setRole, setClassCode, setError }) {
+            const [email, setEmail] = useState("");
+            const [pass, setPass] = useState("");
+            const [code, setCode] = useState("");
+            const [isTeacher, setIsTeacher] = useState(false);
+
+            const handleAuth = async (signup) => {
+                try {
+                    if (signup) await createUserWithEmailAndPassword(auth, email, pass);
+                    else await signInWithEmailAndPassword(auth, email, pass);
+                    setRole('teacher');
+                    localStorage.setItem('userRole', 'teacher');
+                } catch (e) { setError(e.message); }
+            };
+
+            const handleStudent = async () => {
+                if (!code) return setError("Please enter a class code");
+                try {
+                    await signInAnonymously(auth);
+                    setRole('student');
+                    setClassCode(code.toUpperCase());
+                    localStorage.setItem('userRole', 'student');
+                    localStorage.setItem('classCode', code.toUpperCase());
+                } catch (e) { setError(e.message); }
+            };
+
+            return (
+                <div className="max-w-md mx-auto py-12">
+                    <h1 className="text-5xl font-black text-center mb-10 tracking-tight">¡Hola! 👋</h1>
+                    {!isTeacher ? (
+                        <div className="bg-white p-10 rounded-[2.5rem] border shadow-2xl text-center">
+                            <input placeholder="ENTER CODE" className="w-full p-5 border-2 border-slate-100 rounded-2xl text-center text-3xl font-black mb-6 uppercase" value={code} onChange={e => setCode(e.target.value)} />
+                            <button onClick={handleStudent} className="w-full bg-blue-600 text-white py-5 rounded-2xl font-black text-xl shadow-xl">Enter Class</button>
+                            <button onClick={() => setIsTeacher(true)} className="mt-8 text-blue-600 font-bold text-sm">Teacher Login</button>
+                        </div>
+                    ) : (
+                        <div className="bg-white p-10 rounded-[2.5rem] border shadow-2xl space-y-4">
+                            <input placeholder="Email" className="w-full p-4 bg-slate-50 rounded-xl" value={email} onChange={e => setEmail(e.target.value)} />
+                            <input type="password" placeholder="Password" className="w-full p-4 bg-slate-50 rounded-xl" value={pass} onChange={e => setPass(e.target.value)} />
+                            <button onClick={() => handleAuth(false)} className="w-full bg-slate-900 text-white py-4 rounded-xl font-black">Login</button>
+                            <button onClick={() => setIsTeacher(false)} className="w-full mt-4 text-xs font-black text-slate-300 uppercase">Student Access</button>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        function TeacherLobby({ myClasses, onSelect, onCreate }) {
+            const [name, setName] = useState("");
+            return (
+                <div className="space-y-8">
+                    <div className="flex justify-between items-center">
+                        <h2 className="text-3xl font-black">Mis Clases</h2>
+                        <div className="flex gap-2">
+                            <input placeholder="Class Name" className="p-3 border rounded-xl font-bold" value={name} onChange={e => setName(e.target.value)} />
+                            <button onClick={() => { if (name) { onCreate(name); setName(""); } }} className="bg-blue-600 text-white px-5 rounded-xl font-black">Create</button>
+                        </div>
+                    </div>
+                    <div className="grid sm:grid-cols-2 gap-6">
+                        {myClasses.map(c => (
+                            <div key={c.id} onClick={() => onSelect(c)} className="bg-white p-8 rounded-[2rem] border shadow-sm cursor-pointer hover:border-blue-600">
+                                <div className="text-xs font-mono font-black text-blue-600">{c.code}</div>
+                                <div className="text-2xl font-black">{c.name}</div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
+
+        function TeacherDashboard({ assignments, submissions, activeClass, onBack, onAddTask }) {
+            const [open, setOpen] = useState(false);
+            const [title, setTitle] = useState("");
+            const [words, setWords] = useState([{ es: "", en: "" }]);
+
+            const submit = () => {
+                onAddTask({ title, words });
+                setOpen(false);
+            };
+
+            return (
+                <div className="space-y-6">
+                    <button onClick={onBack} className="text-slate-400 font-black mb-4">← Back</button>
+                    <div className="bg-white p-8 rounded-[2rem] border flex justify-between items-center shadow-sm">
+                        <h2 className="text-3xl font-black">{activeClass.name} ({activeClass.code})</h2>
+                        <button onClick={() => setOpen(!open)} className="bg-slate-900 text-white px-8 py-3 rounded-2xl font-black">New List</button>
+                    </div>
+                    {open && (
+                        <div className="bg-white p-8 rounded-[2rem] border-4 border-blue-100 shadow-2xl space-y-4">
+                            <input placeholder="List Title" className="w-full p-4 bg-slate-50 rounded-xl font-black" value={title} onChange={e => setTitle(e.target.value)} />
+                            {words.map((w, i) => (
+                                <div key={i} className="flex gap-2">
+                                    <input placeholder="Spanish" className="flex-1 p-3 border rounded-xl" value={w.es} onChange={e => { const n = [...words]; n[i].es = e.target.value; setWords(n); }} />
+                                    <input placeholder="English" className="flex-1 p-3 border rounded-xl" value={w.en} onChange={e => { const n = [...words]; n[i].en = e.target.value; setWords(n); }} />
+                                </div>
+                            ))}
+                            <button onClick={() => setWords([...words, {es: "", en: ""}])} className="text-blue-600 font-bold">+ Add Word</button>
+                            <button onClick={submit} className="w-full bg-blue-600 text-white py-4 rounded-xl font-black">Publish</button>
+                        </div>
+                    )}
+                    <div className="grid lg:grid-cols-2 gap-8">
+                        <div className="bg-white p-8 rounded-[2rem] border shadow-sm">
+                            <h3 className="text-xl font-black mb-4">Student Scores</h3>
+                            {submissions.map(s => <div key={s.id} className="py-2 border-b flex justify-between text-sm"><span>{s.studentId.slice(0, 5)}</span> <b>{s.score}/{s.total}</b></div>)}
+                        </div>
+                        <div className="bg-white p-8 rounded-[2rem] border shadow-sm">
+                            <h3 className="text-xl font-black mb-4">Sets</h3>
+                            {assignments.map(a => <div key={a.id} className="p-3 bg-slate-50 rounded-xl mb-2 font-bold">{a.title}</div>)}
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function StudentDashboard({ assignments, onStart }) {
+            return (
+                <div className="space-y-8">
+                    <div className="bg-blue-600 p-10 rounded-[2.5rem] text-white shadow-xl">
+                        <h2 className="text-4xl font-black tracking-tight">Mi Escritorio</h2>
+                    </div>
+                    <div className="grid sm:grid-cols-2 gap-6">
+                        {assignments.map(a => (
+                            <div key={a.id} className="bg-white p-8 rounded-[2.5rem] border shadow-lg">
+                                <h4 className="text-2xl font-black mb-6">{a.title}</h4>
+                                <button onClick={() => onStart(a)} className="w-full bg-blue-600 text-white py-4 rounded-2xl font-black shadow-lg">Study Now</button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            );
+        }
+
+        function FlashcardGame({ assignment, onFinish, onQuit }) {
+            const [idx, setIdx] = useState(0);
+            const [flip, setFlip] = useState(false);
+            const [res, setRes] = useState([]);
+            const word = assignment.words[idx];
+
+            const handleNext = (val) => {
+                const nextResults = [...res, val];
+                setRes(nextResults);
+                if (idx < assignment.words.length - 1) {
+                    setIdx(idx + 1);
+                    setFlip(false);
+                } else {
+                    onFinish(nextResults.filter(r => r).length, assignment.words.length);
+                }
+            };
+
+            return (
+                <div className="max-w-xl mx-auto space-y-8">
+                    <div className="flex justify-between font-black text-slate-400 uppercase text-xs">
+                        <button onClick={onQuit}>Exit</button>
+                        <span>{idx + 1} / {assignment.words.length}</span>
+                    </div>
+                    <div className="h-80 bg-white rounded-[3rem] shadow-2xl flex items-center justify-center p-8 text-center cursor-pointer text-4xl font-black" onClick={() => setFlip(!flip)}>
+                        {flip ? word.en : word.es}
+                    </div>
+                    <div className="flex gap-4">
+                        <button onClick={() => handleNext(false)} className="flex-1 bg-white border-4 p-6 rounded-3xl font-black text-slate-400">Need Review</button>
+                        <button onClick={() => handleNext(true)} className="flex-1 bg-blue-600 p-6 rounded-3xl font-black text-white shadow-xl">Mastered!</button>
+                    </div>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
